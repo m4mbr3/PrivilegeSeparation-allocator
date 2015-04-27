@@ -6,24 +6,28 @@
 /* Define the block size since the sizeof will be wrong */
 #define BLOCK_SIZE 20
 
+void *base = NULL;
+void *heaps[100] = {NULL};
+
+
 /*block struct */
-struct s_block {
-    size_t          size;
-    struct s_block *next;
-    struct s_block *prev;
-    int             free;
-    void           *ptr;
+struct ps_chunk {
+    size_t           size;
+    struct ps_chunk *next;
+    struct ps_chunk *prev;
+    int              free;
+    void            *ptr;
     /* A pointer to the allocated block */
     char            data[1];
 };
 
-/* Definition of t_block */
-typedef struct s_block *t_block;
 
 /* Split block according to size. The b block must exist. */
-void split_block(t_block b, size_t s){
-    t_block new;
-    new =(t_block)(b->data + s);
+void
+split_block(struct ps_chunk* b,
+            size_t s) {
+    struct ps_chunk* new;
+    new =(struct ps_chunk*)(b->data + s);
     new->size = b->size - s - BLOCK_SIZE;
     new->next = b->next;
     new->prev = b;
@@ -36,9 +40,11 @@ void split_block(t_block b, size_t s){
 }
 
 /* Add a new block at the top of the heap. Return NULL if things go wrong */
-t_block extend_heap(t_block last, size_t s){
+struct ps_chunk *
+extend_heap(struct ps_chunk *last,
+            size_t s) {
     int sb;
-    t_block b;
+    struct ps_chunk *b;
     b = sbrk(0);
     sb = (int)sbrk(BLOCK_SIZE + s);
     if (sb < 0)
@@ -53,15 +59,15 @@ t_block extend_heap(t_block last, size_t s){
     return (b);
 }
 
-void *base = NULL;
-
-
-t_block get_block (void *p) {
+struct ps_chunk *
+get_block (void *p) {
     char *tmp;
     tmp = p;
     return (p = tmp -= BLOCK_SIZE);
 }
-int valid_addr (void *p){
+
+int
+valid_addr (void *p){
     if (base){
         if (p>base && p<sbrk(0)){
             return (p == (get_block(p))->ptr);
@@ -72,8 +78,11 @@ int valid_addr (void *p){
 
 
 
-t_block find_block(t_block *last, size_t size){
-    t_block b = base;
+struct ps_chunk *
+find_block(struct ps_chunk **last,
+           size_t size,
+           unsigned int privlev) {
+    struct ps_chunk *b = heaps[privlev];
     while (b && !(b->free && b->size >= size)){
         *last = b;
         b = b->next;
@@ -81,13 +90,15 @@ t_block find_block(t_block *last, size_t size){
     return (b);
 }
 
-void *privsep_malloc (size_t size, unsigned int privlev) {
-    t_block b, last;
+void *
+privsep_malloc (size_t size,
+                      unsigned int privlev) {
+    struct ps_chunk *b, *last;
     size_t s;
     s = align4(size);
-    if(base){
-        last = base;
-        b = find_block(&last, s);
+    if(heaps[privlev]){
+        last = heaps[privlev];
+        b = find_block(&last, s, privlev);
         if (b) {
             if ((b->size - s) >= (BLOCK_SIZE + 4))
                 split_block(b,s);
@@ -103,12 +114,14 @@ void *privsep_malloc (size_t size, unsigned int privlev) {
         b = extend_heap (NULL, s);
         if (!b)
             return (NULL);
-        base = b;
+        heaps[privlev] = b;
     }
     return (b->data);
 }
-t_block fusion (t_block b){
-    if (b->next && b->next->free){
+
+struct ps_chunk *
+fusion (struct ps_chunk *b) {
+    if (b->next && b->next->free) {
         b->size += BLOCK_SIZE + b->next->size;
         b->next = b->next->next;
         if(b->next)
@@ -116,18 +129,18 @@ t_block fusion (t_block b){
     }
     return b;
 }
-void privsep_free(void *p){
-    t_block b;
-    if (valid_addr(p))
-    {
+
+void
+privsep_free(void *p) {
+    struct ps_chunk *b;
+    if (valid_addr(p)) {
         b = get_block(p);
         b->free = 1;
         if (b->prev && b->prev->free)
             b = fusion(b->prev);
         if (b->next)
             fusion(b);
-        else
-        {
+        else {
             if (b->prev)
                 b->prev->next = NULL;
             else {
