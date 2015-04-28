@@ -1,5 +1,5 @@
-all: shared static
-
+all: shared static test
+lib: share static
 shared:
 	gcc -g -c -fpic privsep_malloc.c
 	gcc -g -shared -o libprivsep_malloc.so privsep_malloc.o

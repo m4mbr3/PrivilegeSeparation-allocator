@@ -1,8 +1,12 @@
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <unistd.h>
 
+#define SIZE_ALIGN (4*sizeof(size_t))
+#define SIZE_MASK (-SIZE_ALIGN)
 #define PAGE_LENGTH sysconf(_SC_PAGESIZE)
 #define align4(x) (((((x)-1)>>2)<<2)+4)
 /* Define the block size since the sizeof will be wrong */
@@ -47,14 +51,16 @@ split_block(struct ps_chunk* b,
 void *
 extend_heap(size_t s,
             unsigned int privlev) {
-
-    int times = (s%PAGE_LENGTH)+1;
+    int times = (s/PAGE_LENGTH)+1;
+    //printf ("\nTimes*PAGE_LENGTH = %d, SIZE = %d\n", times*PAGE_LENGTH,(s/PAGE_LENGTH)+1);
     void *chunk = mmap(NULL,
                     times*PAGE_LENGTH,
                     PROT_READ|PROT_WRITE,
                     MAP_PRIVATE|MAP_ANONYMOUS,
                     -1 ,
                     (off_t) 0);
+   /* void *chunk;*/
+   /* int res = posix_memalign(&chunk, PAGE_LENGTH, times*PAGE_LENGTH); */
     if (chunk == MAP_FAILED) return NULL;
     if (heaps[privlev] != NULL) {
         /*scorro pagine e aggiungo una pagina*/
@@ -107,7 +113,7 @@ extend_heap(size_t s,
         /*stick new page to head of the heap for the requeste privlev */
         heaps[privlev] = page;
     }
-    return chunk;
+    return (void *)chunk;
 }
 
 struct ps_chunk *
@@ -146,7 +152,7 @@ find_block(size_t size,
                     used->next = free;
                     free->prev = used;
                     free->next = NULL;
-                    return free->ptr;
+                    return (void *)free->ptr;
                 }
                 else if (free->prev == NULL) {
                     /* first element of the list to be removed */
@@ -155,7 +161,7 @@ find_block(size_t size,
                     used->next = free;
                     free->prev = used;
                     free->next = NULL;
-                    return free->ptr;
+                    return (void *)free->ptr;
                 }
                 else {
                     /* element in the middle of the list */
@@ -166,7 +172,7 @@ find_block(size_t size,
                     used->next = free;
                     free->prev = used;
                     free->next = NULL;
-                    return free->ptr;
+                    return (void *)free->ptr;
                 }
             }
             else if (free->size > size) {
@@ -180,7 +186,7 @@ find_block(size_t size,
                 used->next = occ;
                 occ->prev  = used;
                 occ->next  = NULL;
-                return occ->ptr;
+                return (void *)occ->ptr;
             }
             free = free->next;
         }
@@ -188,17 +194,32 @@ find_block(size_t size,
     }
     return NULL;
 }
+static int adjust_size(size_t *n) {
+    if (*n-1 > PTRDIFF_MAX -SIZE_ALIGN - PAGE_LENGTH) {
+        if(*n) {
+            return -1;
+        }
+        else {
+            *n = SIZE_ALIGN;
+            return 0;
+        }
+    }
+    *n = (*n + SIZE_ALIGN -1) & SIZE_MASK;
+    return 0;
+}
 
 void *
 privsep_malloc (size_t size,
                 unsigned int privlev) {
     struct ps_page *page, *last;
     void *ptr;
-    size_t s;
-    s = align4(size);
+    size_t s = size;
+    //s = align4(size);
+
+    if (adjust_size(&s) < 0 ) return 0;
 
     if(heaps[privlev]){
-        void *ptr = find_block(s, privlev);
+        ptr = find_block(s, privlev);
         if (ptr == NULL) {
             ptr = extend_heap(s, privlev);
         }
@@ -208,7 +229,7 @@ privsep_malloc (size_t size,
         if (!ptr)
             return NULL;
     }
-    return ptr;
+    return (void *)ptr;
 }
 
 struct ps_chunk *
@@ -224,6 +245,7 @@ fusion (struct ps_chunk *b) {
 
 void
 privsep_free(void *p) {
+
     struct ps_chunk *b;
     if (valid_addr(p)) {
         b = get_block(p);
