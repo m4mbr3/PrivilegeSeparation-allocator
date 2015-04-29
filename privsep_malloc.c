@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <unistd.h>
 
 #define SIZE_ALIGN (4*sizeof(size_t))
@@ -53,6 +54,8 @@ extend_heap(size_t s,
         while (page->next != NULL) page = page->next;
         /* create the new page for this privilege level */
         page->next = (struct ps_page *) malloc(sizeof(struct ps_page));
+        /*keep track of the page size for freeing correctly */
+        page->size = times*PAGE_LENGTH;
         /*setting prev pointer */
         page->next->prev = page;
         /*moving to the new created page */
@@ -78,6 +81,8 @@ extend_heap(size_t s,
     else {
         /*genero la prima pagina*/
         struct ps_page *page = (struct ps_page *) malloc(sizeof(struct ps_page));
+        /*Keep track of the page size for freeing correctly */
+        page->size = times*PAGE_LENGTH;
         /*creation of free first chunk */
         page->free = (struct ps_chunk *)malloc (sizeof(struct ps_chunk));
         /*creation of used first chunk */
@@ -88,7 +93,7 @@ extend_heap(size_t s,
         page->used->prev = NULL;
         page->used->ptr = chunk;
         /*initialization of second used chunk */
-        page->free->size = PAGE_LENGTH - s;
+        page->free->size = (times*PAGE_LENGTH)- s;
         page->free->next = NULL;
         page->free->prev = NULL;
         page->free->ptr = chunk+s;
@@ -230,29 +235,35 @@ void fusion_free_chunk(struct ps_chunk *free_list) {
         if ((free_list->ptr+free_list->size) == next->ptr ) {
             /*here I should merge the two adjacent blocks freeing next */
             free_list->size += next->size;
-            free_list->next == next->next;
+            free_list->next = next->next;
             free(next);
         }
-        free_list = free_list->next;
+        else
+            free_list = free_list->next;
     }
 }
 void free_page (struct ps_page *page, int privlev){
+
     if(page->used != NULL) return;
-    page->free;
-    munmap (page->free->ptr, page->size);
+
+    int res = munmap (page->free->ptr, page->size);
+
+    if (res != 0) return;
+
     free(page->free);
+
     if(page->next == NULL && page->prev == NULL) {
         /* Last page */
         free(page);
         heaps[privlev] = NULL;
     }
-    if(page->next == NULL) {
+    else if(page->next == NULL) {
         /* Tail element */
         struct ps_page *prev = page->prev;
         prev->next = NULL;
         free(page);
     }
-    if(page->prev == NULL) {
+    else if(page->prev == NULL) {
         /* First element */
         heaps[privlev] = page->next;
         free(page);
@@ -267,6 +278,38 @@ void free_page (struct ps_page *page, int privlev){
     }
     return;
 }
+
+struct ps_chunk *
+insert_element_to_list (struct ps_chunk *list, struct ps_chunk *element){
+    struct ps_chunk *tmp = list;
+    struct ps_chunk *prev = NULL;
+    if(list == NULL || element == NULL) return list;
+    while (tmp != NULL && element->ptr > tmp->ptr ){
+        prev = tmp;
+        tmp = tmp->next;
+    }
+    if (tmp == NULL) {
+       prev->next = element;
+       element->prev = prev;
+       element->next = NULL;
+    }
+    else {
+        if (prev !=NULL){
+            element->next = prev->next;
+            prev->next = element;
+            element->prev = prev;
+            tmp->prev = element;
+        }
+        else {
+            tmp->prev = element;
+            element->next = tmp;
+            element->prev = NULL;
+            return element;
+        }
+    }
+    return list;
+}
+
 void
 privsep_free(void *p) {
     int num_heap;
@@ -275,34 +318,37 @@ privsep_free(void *p) {
 
     struct ps_chunk *free = page->free;
     struct ps_chunk *used = page->used;
+
     while (used != NULL && used->ptr != p) used = used->next;
+
+    if (used == NULL) return;
+
+    memset(used->ptr, 0, used->size);
 
     if (used->next == NULL && used->prev == NULL) {
         /* It is the last used block for this page so*/
-        while (free != NULL && used->ptr > free->ptr)
-            free = free->next;
-
-        if (free == NULL) return;
-
-        free->prev->next = used;
-        used->prev = free->prev;
-        used->next = free;
-        free->prev = used;
         page->used = NULL;
+        page->free = insert_element_to_list(page->free, used);
     }
     else if (used->next == NULL) {
         /* It is the tail of the list */
-        printf ("It is the tail\n");
+        used->prev->next = NULL;
+        page->free = insert_element_to_list(page->free, used);
     }
     else if (used->prev == NULL) {
         /* It is the head */
-        printf ("It is the head\n");
+        page->used = used->next;
+        used->next->prev = NULL;
+        page->free = insert_element_to_list(page->free, used);
     }
     else {
         /* It is in the middle */
-        printf ("It is in the middle\n");
+        used->prev->next = used->next;
+        page->free = insert_element_to_list(page->free, used);
     }
+
     fusion_free_chunk(page->free);
+
     if (page->free->size == page->size)
         free_page (page, num_heap);
 
