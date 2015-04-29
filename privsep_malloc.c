@@ -29,23 +29,8 @@ struct ps_page {
     struct ps_chunk *used;
     struct ps_page *next;
     struct ps_page *prev;
+    size_t size;
 };
-
-/* Split block according to size. The b block must exist. */
-void
-split_block(struct ps_chunk* b,
-            size_t s) {
-    struct ps_chunk* new;
-    //new =(struct ps_chunk*)(b->data + s);
-    new->size = b->size - s - BLOCK_SIZE;
-    new->next = b->next;
-    new->prev = b;
-    //new->ptr = new->data;
-    b->size = s;
-    b->next = new;
-    if (new->next)
-        new->next->prev = new;
-}
 
 /* Add a new block at the top of the heap. Return NULL if things go wrong */
 void *
@@ -82,7 +67,7 @@ extend_heap(size_t s,
         page->used->prev = NULL;
         page->used->ptr = chunk;
         /*initialization of second used chunk */
-        page->free->size = PAGE_LENGTH - s;
+        page->free->size = (times*PAGE_LENGTH) - s;
         page->free->next = NULL;
         page->free->prev = NULL;
         page->free->ptr = chunk+s;
@@ -116,22 +101,6 @@ extend_heap(size_t s,
     return (void *)chunk;
 }
 
-struct ps_chunk *
-get_block (void *p) {
-    char *tmp;
-    tmp = p;
-    return (p = tmp -= BLOCK_SIZE);
-}
-
-int
-valid_addr (void *p){
-    if (base){
-        if (p>base && p<sbrk(0)){
-            return (p == (get_block(p))->ptr);
-        }
-    }
-    return (0);
-}
 
 void *
 find_block(size_t size,
@@ -177,7 +146,7 @@ find_block(size_t size,
             }
             else if (free->size > size) {
                 /*case where I should reduce the free chunk and create a new one into the used*/
-                struct ps_chunk *occ = (struct ps_chunk *) malloc(sizeof(struct ps_chunk*));
+                struct ps_chunk *occ = (struct ps_chunk *) malloc(sizeof(struct ps_chunk));
                 occ->ptr    = free->ptr;
                 occ->size   = size;
                 free->size -= size;
@@ -215,8 +184,8 @@ privsep_malloc (size_t size,
     void *ptr;
     size_t s = size;
     //s = align4(size);
-
-    if (adjust_size(&s) < 0 ) return 0;
+    if (privlev < 0) return NULL;
+    if (adjust_size(&s) < 0 ) return NULL;
 
     if(heaps[privlev]){
         ptr = find_block(s, privlev);
@@ -232,34 +201,110 @@ privsep_malloc (size_t size,
     return (void *)ptr;
 }
 
-struct ps_chunk *
-fusion (struct ps_chunk *b) {
-    if (b->next) {
-        b->size += BLOCK_SIZE + b->next->size;
-        b->next = b->next->next;
-        if(b->next)
-            b->next->prev = b;
-    }
-    return b;
-}
-
-void
-privsep_free(void *p) {
-
-    struct ps_chunk *b;
-    if (valid_addr(p)) {
-        b = get_block(p);
-        if (b->prev)
-            b = fusion(b->prev);
-        if (b->next)
-            fusion(b);
-        else {
-            if (b->prev)
-                b->prev->next = NULL;
-            else {
-                base = NULL;
-                brk(b);
+struct ps_page *
+get_heap_page(void *p, int *heap_page) {
+    int i=0;
+    for (i = 0; i < 100; i++){
+        if (heaps[i] != NULL) {
+            struct ps_page  *page = heaps[i];
+            while(page != NULL){
+                struct ps_chunk *used = page->used;
+                while (used != NULL) {
+                    if (used->ptr == p) {
+                        *heap_page = i;
+                        return page;
+                    }
+                    used = used->next;
+                }
+                page = page->next;
             }
         }
     }
+    return NULL;
+}
+void fusion_free_chunk(struct ps_chunk *free_list) {
+    /* This function should receive an ordered list */
+    if (free_list == NULL) return ;
+    while (free_list->next != NULL) {
+        struct ps_chunk *next = free_list->next;
+        if ((free_list->ptr+free_list->size) == next->ptr ) {
+            /*here I should merge the two adjacent blocks freeing next */
+            free_list->size += next->size;
+            free_list->next == next->next;
+            free(next);
+        }
+        free_list = free_list->next;
+    }
+}
+void free_page (struct ps_page *page, int privlev){
+    if(page->used != NULL) return;
+    page->free;
+    munmap (page->free->ptr, page->size);
+    free(page->free);
+    if(page->next == NULL && page->prev == NULL) {
+        /* Last page */
+        free(page);
+        heaps[privlev] = NULL;
+    }
+    if(page->next == NULL) {
+        /* Tail element */
+        struct ps_page *prev = page->prev;
+        prev->next = NULL;
+        free(page);
+    }
+    if(page->prev == NULL) {
+        /* First element */
+        heaps[privlev] = page->next;
+        free(page);
+    }
+    else {
+        /*in the middle */
+        struct ps_page *prev = page->prev;
+        struct ps_page *next = page->next;
+        prev->next = next;
+        next->prev = prev;
+        free(page);
+    }
+    return;
+}
+void
+privsep_free(void *p) {
+    int num_heap;
+    struct ps_page *page = get_heap_page(p, &num_heap);
+    if (page == NULL) return;
+
+    struct ps_chunk *free = page->free;
+    struct ps_chunk *used = page->used;
+    while (used != NULL && used->ptr != p) used = used->next;
+
+    if (used->next == NULL && used->prev == NULL) {
+        /* It is the last used block for this page so*/
+        while (free != NULL && used->ptr > free->ptr)
+            free = free->next;
+
+        if (free == NULL) return;
+
+        free->prev->next = used;
+        used->prev = free->prev;
+        used->next = free;
+        free->prev = used;
+        page->used = NULL;
+    }
+    else if (used->next == NULL) {
+        /* It is the tail of the list */
+        printf ("It is the tail\n");
+    }
+    else if (used->prev == NULL) {
+        /* It is the head */
+        printf ("It is the head\n");
+    }
+    else {
+        /* It is in the middle */
+        printf ("It is in the middle\n");
+    }
+    fusion_free_chunk(page->free);
+    if (page->free->size == page->size)
+        free_page (page, num_heap);
+
+    return;
 }
