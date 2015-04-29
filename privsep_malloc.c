@@ -349,7 +349,7 @@ privsep_free(void *p) {
 
     fusion_free_chunk(page->free);
 
-    if (page->free->size == page->size)
+    if (page->free != NULL && page->free->size == page->size)
         free_page (page, num_heap);
 
     return;
