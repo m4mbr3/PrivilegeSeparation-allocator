@@ -5,7 +5,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
+#define SYSCALL_TRACEMALLOC 353
 #define SIZE_ALIGN (4*sizeof(size_t))
 #define SIZE_MASK (-SIZE_ALIGN)
 #define PAGE_LENGTH sysconf(_SC_PAGESIZE)
@@ -33,18 +35,80 @@ struct ps_page {
     size_t size;
 };
 
+void print_heap_metadata() {
+    int i;
+    for (i=0;i<100;++i){
+        if(heaps[i] != NULL){
+            struct ps_page *page = (struct ps_page *) heaps[i];
+            int k = 0;
+            printf ("\n\nHEAP N %d\n\n", i);
+            while (page != NULL) {
+                struct ps_chunk *free = page->free;
+                struct ps_chunk *used = page->used;
+                printf ("=====================\n");
+                printf ("PAGE %d, ADDRESS = %p\n", k,page);
+                printf ("SIZE = %d, NEXT = %p, PREV = %p, FREE = %p, USED = %p\n\n\n", page->size,
+                                                                                   page->next,
+                                                                                   page->prev,
+                                                                                   page->free,
+                                                                                   page->used);
+                int j = 0;
+                while(free != NULL) {
+                    printf ("~~~~~~~~~~~~~~~~~~\n");
+                    printf ("FREE N %d, ADDRESS = %p\n", j, free);
+                    printf ("SIZE = %d, NEXT = %p, PREV = %p, PTR = %p\n", free->size,
+                                                                           free->next,
+                                                                           free->prev,
+                                                                           free->ptr);
+                    printf ("~~~~~~~~~~~~~~~~~~\n\n");
+                    free = free->next;
+                    j++;
+                }
+                j=0;
+                while(used != NULL) {
+                    printf ("~~~~~~~~~~~~~~~~~~\n");
+                    printf ("USED N %d, ADDRESS = %p\n", j, used);
+                    printf ("SIZE = %d, NEXT = %p, PREV = %p, PTR = %p\n", used->size,
+                                                                           used->next,
+                                                                           used->prev,
+                                                                           used->ptr);
+                    printf ("~~~~~~~~~~~~~~~~~~\n\n");
+                    used = used->next;
+                    j++;
+                }
+                page = page->next;
+                k++;
+            }
+            printf("=====================\n\n\n");
+        }
+    }
+}
 /* Add a new block at the top of the heap. Return NULL if things go wrong */
 void *
 extend_heap(size_t s,
             unsigned int privlev) {
-    int times = (s/PAGE_LENGTH)+1;
+    int times = (s/(1+PAGE_LENGTH))+1;
     //printf ("\nTimes*PAGE_LENGTH = %d, SIZE = %d\n", times*PAGE_LENGTH,(s/PAGE_LENGTH)+1);
-    void *chunk = mmap(NULL,
-                    times*PAGE_LENGTH,
-                    PROT_READ|PROT_WRITE,
-                    MAP_PRIVATE|MAP_ANONYMOUS,
-                    -1 ,
-                    (off_t) 0);
+    /*void *chunk = mmap(NULL,*/
+                    /*times*PAGE_LENGTH,*/
+                    /*PROT_READ|PROT_WRITE,*/
+                    /*MAP_PRIVATE|MAP_ANONYMOUS,*/
+                    /*-1 ,*/
+                    /*(off_t) 0);*/
+    if (privlev < 0 || privlev > 100) return NULL;
+
+    unsigned long ret_sys = syscall(SYSCALL_TRACEMALLOC,
+                                    NULL,
+                                    times*PAGE_LENGTH,
+                                    PROT_READ|PROT_WRITE,
+                                    MAP_PRIVATE|MAP_ANONYMOUS,
+                                    "MMAP",
+                                    privlev);
+
+    if (ret_sys == -EINVAL) return NULL;
+
+    void *chunk = (void *) ret_sys;
+
    /* void *chunk;*/
    /* int res = posix_memalign(&chunk, PAGE_LENGTH, times*PAGE_LENGTH); */
     if (chunk == MAP_FAILED) return NULL;
@@ -54,12 +118,12 @@ extend_heap(size_t s,
         while (page->next != NULL) page = page->next;
         /* create the new page for this privilege level */
         page->next = (struct ps_page *) malloc(sizeof(struct ps_page));
-        /*keep track of the page size for freeing correctly */
-        page->size = times*PAGE_LENGTH;
         /*setting prev pointer */
         page->next->prev = page;
         /*moving to the new created page */
         page = page->next;
+        /*keep track of the page size for freeing correctly */
+        page->size = times*PAGE_LENGTH;
         /*creation of free first chunk */
         page->free = (struct ps_chunk *)malloc (sizeof(struct ps_chunk));
         /*creation of used first chunk */
@@ -106,6 +170,16 @@ extend_heap(size_t s,
     return (void *)chunk;
 }
 
+int count_page (struct ps_page *p) {
+    int i=0;
+
+    while (p != NULL) {
+        p = p->next;
+        i++;
+    }
+
+    return i;
+}
 
 void *
 find_block(size_t size,
@@ -122,6 +196,11 @@ find_block(size_t size,
                 if (free->prev == NULL && free->next == NULL){
                     /* case free is head of the list */
                     head->free = NULL;
+                    if (used == NULL) {
+                        head->used = head->free;
+                        head->free = NULL;
+                        return (void *)head->used->ptr;
+                    }
                     while (used->next != NULL) used = used->next;
                     used->next = free;
                     free->prev = used;
@@ -131,6 +210,10 @@ find_block(size_t size,
                 else if (free->prev == NULL) {
                     /* first element of the list to be removed */
                     head->free = free->next;
+                    if (used == NULL) {
+                        head->used = free;
+                        return (void *)head->used->ptr;
+                    }
                     while (used->next != NULL) used = used->next;
                     used->next = free;
                     free->prev = used;
@@ -142,6 +225,12 @@ find_block(size_t size,
                     struct ps_chunk *pre_free = free->prev;
                     pre_free->next = free->next;
                     free->next->prev = pre_free;
+                    if (used == NULL) {
+                        head->used = free;
+                        head->used->next = NULL;
+                        head->used->prev = NULL;
+                        return (void *) head->used->ptr;
+                    }
                     while(used->next != NULL) used = used->next;
                     used->next = free;
                     free->prev = used;
@@ -156,6 +245,12 @@ find_block(size_t size,
                 occ->size   = size;
                 free->size -= size;
                 free->ptr  += size;
+                if (used == NULL){
+                    head->used = occ;
+                    occ->prev = NULL;
+                    occ->next = NULL;
+                    return (void *) head->used->ptr;
+                }
                 while (used->next != NULL) used = used->next;
                 used->next = occ;
                 occ->prev  = used;
@@ -189,7 +284,7 @@ privsep_malloc (size_t size,
     void *ptr;
     size_t s = size;
     //s = align4(size);
-    if (privlev < 0) return NULL;
+    if (privlev < 0 || privlev > 100) return NULL;
     if (adjust_size(&s) < 0 ) return NULL;
 
     if(heaps[privlev]){
@@ -203,6 +298,7 @@ privsep_malloc (size_t size,
         if (!ptr)
             return NULL;
     }
+    //print_heap_metadata();
     return (void *)ptr;
 }
 
@@ -242,13 +338,21 @@ void fusion_free_chunk(struct ps_chunk *free_list) {
             free_list = free_list->next;
     }
 }
+
 void free_page (struct ps_page *page, int privlev){
 
     if(page->used != NULL) return;
 
-    int res = munmap (page->free->ptr, page->size);
+    //int res = munmap (page->free->ptr, page->size);
+    unsigned long res = syscall(SYSCALL_TRACEMALLOC,
+                                page->free->ptr,
+                                page->size,
+                                0,
+                                0,
+                                "MUNMAP",
+                                0);
 
-    if (res != 0) return;
+    if (res == -EINVAL) return;
 
     free(page->free);
 
@@ -266,14 +370,13 @@ void free_page (struct ps_page *page, int privlev){
     else if(page->prev == NULL) {
         /* First element */
         heaps[privlev] = page->next;
+        page->next->prev = NULL;
         free(page);
     }
     else {
         /*in the middle */
-        struct ps_page *prev = page->prev;
-        struct ps_page *next = page->next;
-        prev->next = next;
-        next->prev = prev;
+        page->prev->next = page->next;
+        page->next->prev = page->prev;
         free(page);
     }
     return;
@@ -314,6 +417,7 @@ void
 privsep_free(void *p) {
     int num_heap;
     struct ps_page *page = get_heap_page(p, &num_heap);
+    //printf ("\n PAGE = %p, N_HEAP = %d\n", page, num_heap);
     if (page == NULL) return;
 
     struct ps_chunk *free = page->free;
@@ -322,7 +426,7 @@ privsep_free(void *p) {
     while (used != NULL && used->ptr != p) used = used->next;
 
     if (used == NULL) return;
-
+    //printf ("\n USED PAGE = %p", used);
     memset(used->ptr, 0, used->size);
 
     if (used->next == NULL && used->prev == NULL) {
@@ -348,9 +452,9 @@ privsep_free(void *p) {
     }
 
     fusion_free_chunk(page->free);
-
-    if (page->free != NULL && page->free->size == page->size)
+    //printf ("THE PAGE NUMBER FOR HEAP %d is %d",num_heap, count_page(heaps[num_heap]));
+    if (page->free != NULL && page->free->size == page->size && count_page(heaps[num_heap]) > 2)
         free_page (page, num_heap);
-
+    //print_heap_metadata();
     return;
 }
