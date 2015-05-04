@@ -87,14 +87,9 @@ void print_heap_metadata() {
 void *
 extend_heap(size_t s,
             unsigned int privlev) {
+
     int times = (s/(1+PAGE_LENGTH))+1;
-    //printf ("\nTimes*PAGE_LENGTH = %d, SIZE = %d\n", times*PAGE_LENGTH,(s/PAGE_LENGTH)+1);
-    /*void *chunk = mmap(NULL,*/
-                    /*times*PAGE_LENGTH,*/
-                    /*PROT_READ|PROT_WRITE,*/
-                    /*MAP_PRIVATE|MAP_ANONYMOUS,*/
-                    /*-1 ,*/
-                    /*(off_t) 0);*/
+
     if (privlev < 0 || privlev > 100) return NULL;
 
     unsigned long ret_sys = syscall(SYSCALL_TRACEMALLOC,
@@ -109,9 +104,8 @@ extend_heap(size_t s,
 
     void *chunk = (void *) ret_sys;
 
-   /* void *chunk;*/
-   /* int res = posix_memalign(&chunk, PAGE_LENGTH, times*PAGE_LENGTH); */
     if (chunk == MAP_FAILED) return NULL;
+
     if (heaps[privlev] != NULL) {
         /*scorro pagine e aggiungo una pagina*/
         struct ps_page *page = heaps[privlev];
@@ -152,8 +146,6 @@ extend_heap(size_t s,
         struct ps_page *page = (struct ps_page *) malloc(sizeof(struct ps_page));
         /*Keep track of the page size for freeing correctly */
         page->size = times*PAGE_LENGTH;
-        /*creation of free first chunk */
-        page->free = (struct ps_chunk *)malloc (sizeof(struct ps_chunk));
         /*creation of used first chunk */
         page->used = (struct ps_chunk *)malloc (sizeof(struct ps_chunk));
         /*initialization of first used chunk */
@@ -161,11 +153,17 @@ extend_heap(size_t s,
         page->used->next = NULL;
         page->used->prev = NULL;
         page->used->ptr = chunk;
-        /*initialization of second used chunk */
-        page->free->size = (times*PAGE_LENGTH)- s;
-        page->free->next = NULL;
-        page->free->prev = NULL;
-        page->free->ptr = chunk+s;
+        if ((times*PAGE_LENGTH -s) > 0) {
+            /*creation of free first chunk */
+            page->free = (struct ps_chunk *)malloc (sizeof(struct ps_chunk));
+            /*initialization of second used chunk */
+            page->free->size = (times*PAGE_LENGTH)- s;
+            page->free->next = NULL;
+            page->free->prev = NULL;
+            page->free->ptr = chunk+s;
+        }
+        else
+            page->free = NULL;
         /*setting next and prev pointer to null */
         page->next = NULL;
         page->prev = NULL;
@@ -177,12 +175,10 @@ extend_heap(size_t s,
 
 int count_page (struct ps_page *p) {
     int i=0;
-
     while (p != NULL) {
         p = p->next;
         i++;
     }
-
     return i;
 }
 
@@ -215,6 +211,7 @@ find_block(size_t size,
                 else if (free->prev == NULL) {
                     /* first element of the list to be removed */
                     head->free = free->next;
+                    free->next->prev = free->prev;
                     if (used == NULL) {
                         head->used = free;
                         free->prev = NULL;
