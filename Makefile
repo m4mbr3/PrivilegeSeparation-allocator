@@ -17,4 +17,4 @@ static:
 test:
 	$(MAKE) -C test
 clean:
-	rm -f *.a *.o *.so lib/* include/* test/test_lib_shared test/test_lib_static
+	rm -f *.a *.o *.so lib/* include/* test/test_lib_shared test/test_lib_static test/*.o test/*.bc* test/test1 test/test2 test/*.ld
