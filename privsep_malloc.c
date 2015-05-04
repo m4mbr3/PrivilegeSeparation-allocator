@@ -124,8 +124,6 @@ extend_heap(size_t s,
         page = page->next;
         /*keep track of the page size for freeing correctly */
         page->size = times*PAGE_LENGTH;
-        /*creation of free first chunk */
-        page->free = (struct ps_chunk *)malloc (sizeof(struct ps_chunk));
         /*creation of used first chunk */
         page->used = (struct ps_chunk *)malloc (sizeof(struct ps_chunk));
         /*initialization of first used chunk */
@@ -133,11 +131,18 @@ extend_heap(size_t s,
         page->used->next = NULL;
         page->used->prev = NULL;
         page->used->ptr = chunk;
-        /*initialization of second used chunk */
-        page->free->size = (times*PAGE_LENGTH) - s;
-        page->free->next = NULL;
-        page->free->prev = NULL;
-        page->free->ptr = chunk+s;
+
+        if ((times*PAGE_LENGTH -s) > 0) {
+            /*creation of free first chunk */
+            page->free = (struct ps_chunk *)malloc (sizeof(struct ps_chunk));
+            /*initialization of second used chunk */
+            page->free->size = (times*PAGE_LENGTH) - s;
+            page->free->next = NULL;
+            page->free->prev = NULL;
+            page->free->ptr = chunk+s;
+        }
+        else
+            page->free = NULL;
         /*setting next and prev pointer to null */
         page->next = NULL;
 
@@ -195,7 +200,6 @@ find_block(size_t size,
                 /*case where I should move the whole chunk*/
                 if (free->prev == NULL && free->next == NULL){
                     /* case free is head of the list */
-                    head->free = NULL;
                     if (used == NULL) {
                         head->used = head->free;
                         head->free = NULL;
@@ -205,6 +209,7 @@ find_block(size_t size,
                     used->next = free;
                     free->prev = used;
                     free->next = NULL;
+                    head->free = NULL;
                     return (void *)free->ptr;
                 }
                 else if (free->prev == NULL) {
@@ -212,6 +217,8 @@ find_block(size_t size,
                     head->free = free->next;
                     if (used == NULL) {
                         head->used = free;
+                        free->prev = NULL;
+                        free->next = NULL;
                         return (void *)head->used->ptr;
                     }
                     while (used->next != NULL) used = used->next;
@@ -298,7 +305,7 @@ privsep_malloc (size_t size,
         if (!ptr)
             return NULL;
     }
-    //print_heap_metadata();
+    print_heap_metadata();
     return (void *)ptr;
 }
 
@@ -386,7 +393,15 @@ struct ps_chunk *
 insert_element_to_list (struct ps_chunk *list, struct ps_chunk *element){
     struct ps_chunk *tmp = list;
     struct ps_chunk *prev = NULL;
-    if(list == NULL || element == NULL) return list;
+
+    if(list == NULL)  {
+        element->prev = NULL;
+        element->next = NULL;
+        return element;
+    }
+
+    if(element == NULL) return list;
+
     while (tmp != NULL && element->ptr > tmp->ptr ){
         prev = tmp;
         tmp = tmp->next;
@@ -453,8 +468,8 @@ privsep_free(void *p) {
 
     fusion_free_chunk(page->free);
     //printf ("THE PAGE NUMBER FOR HEAP %d is %d",num_heap, count_page(heaps[num_heap]));
-    if (page->free != NULL && page->free->size == page->size && count_page(heaps[num_heap]) > 2)
+    if (page->free != NULL && page->free->size == page->size && count_page(heaps[num_heap]) > 100)
         free_page (page, num_heap);
-    //print_heap_metadata();
+    print_heap_metadata();
     return;
 }
