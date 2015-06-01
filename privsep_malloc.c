@@ -88,8 +88,8 @@ void *
 extend_heap(size_t s,
             unsigned int privlev) {
 
-    int times = (s/(1+PAGE_LENGTH))+1;
-
+    int times = s/PAGE_LENGTH;
+    if (s%PAGE_LENGTH != 0) times++;
     if (privlev < 0 || privlev > 100) return NULL;
 
     unsigned long ret_sys = syscall(SYSCALL_TRACEMALLOC,
@@ -227,8 +227,14 @@ find_block(size_t size,
                 else {
                     /* element in the middle of the list */
                     struct ps_chunk *pre_free = free->prev;
-                    pre_free->next = free->next;
-                    free->next->prev = pre_free;
+
+                    if (free->next != NULL){
+                        pre_free->next = free->next;
+                        free->next->prev = pre_free;
+                    }
+                    else
+                        pre_free->next = NULL;
+
                     if (used == NULL) {
                         head->used = free;
                         head->used->next = NULL;
@@ -302,7 +308,7 @@ privsep_malloc (size_t size,
         if (!ptr)
             return NULL;
     }
-    print_heap_metadata();
+    /*print_heap_metadata();*/
     return (void *)ptr;
 }
 
@@ -464,9 +470,9 @@ privsep_free(void *p) {
     }
 
     fusion_free_chunk(page->free);
-    //printf ("THE PAGE NUMBER FOR HEAP %d is %d",num_heap, count_page(heaps[num_heap]));
+
     if (page->free != NULL && page->free->size == page->size && count_page(heaps[num_heap]) > 100)
         free_page (page, num_heap);
-    print_heap_metadata();
+    /*print_heap_metadata();*/
     return;
 }
