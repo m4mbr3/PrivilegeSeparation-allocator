@@ -6,14 +6,14 @@ lib: shared static
 shared:
 	gcc -g -c -fpic privsep_malloc.c
 	gcc -g -shared -o libprivsep_malloc.so privsep_malloc.o
-	cp libprivsep_malloc.so lib
+	cp libprivsep_malloc.so /lib
 	cp libprivsep_malloc.h include
 
 static:
 	gcc -g -c privsep_malloc.c
 	ar rs libprivsep_malloc.a privsep_malloc.o
-	cp libprivsep_malloc.a lib
-	cp libprivsep_malloc.h include
+	cp libprivsep_malloc.a /lib
+	cp libprivsep_malloc.h /usr/include
 test:
 	$(MAKE) -C test
 clean:
